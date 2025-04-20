@@ -64,7 +64,7 @@ def main():
     """
     # Test the NVIDIA embedding service first
     print("\n=== Testing NVIDIA Embedding Service ===")
-    rag = NVIDIARAGSystem(
+    rag = RAGSystem(
         embedding_base_url="http://localhost:8089",
         embedding_model_name="nvidia/nv-embedqa-e5-v5",
         llm_base_url="http://localhost:8088",
@@ -91,7 +91,7 @@ def main():
     
     # Initialize the RAG system with NVIDIA embeddings and Milvus Lite
     print("\n=== Initializing NVIDIA RAG System ===")
-    rag = NVIDIARAGSystem(
+    rag = RAGSystem(
         milvus_db_path="./fiqa_milvus_lite.db",
         embedding_base_url="http://localhost:8089",
         embedding_model_name="nvidia/nv-embedqa-e5-v5",
