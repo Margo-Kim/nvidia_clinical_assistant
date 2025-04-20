@@ -1,5 +1,5 @@
 """
-LangChain RAG Implementation using NVIDIA AI Endpoints and Milvus Lite
+RAG Implementation using NVIDIA AI Endpoints and Milvus Lite
 """
 
 import os
@@ -8,45 +8,40 @@ from typing import List, Dict, Any
 
 # LangChain and related imports
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings, ChatNVIDIA
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_milvus import Milvus
 from langchain.schema import Document
 from langchain.prompts import ChatPromptTemplate
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from pymilvus import connections, utility
+from langchain_milvus import Milvus
+from pymilvus import MilvusClient
 
-# Set logging level to DEBUG for more information
+# Set logging level
 import logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # Set to DEBUG to see more detailed logs
 logger = logging.getLogger(__name__)
 
 class RAGSystem:
     def __init__(self, 
-                 docs_folder: str = "documents",
                  milvus_db_path: str = "./milvus_lite.db",
                  embedding_base_url: str = "http://localhost:8089",
+                 embedding_model_name: str = "nvidia/nv-embedqa-e5-v5",
                  llm_base_url: str = "http://localhost:8088",
-                 chunk_size: int = 1000,
-                 chunk_overlap: int = 200):
+                 llm_model_name: str = "meta/llama-3.1-nemotron-70b-instruct:latest"):
         """
-        Initialize the RAG system.
+        Initialize the RAG system with NVIDIA embeddings.
         
         Args:
-            docs_folder: Folder containing documents to process
             milvus_db_path: Path to the Milvus Lite database file
             embedding_base_url: NVIDIA embedding service URL
+            embedding_model_name: NVIDIA embedding model name
             llm_base_url: NVIDIA LLM service URL
-            chunk_size: Document chunk size for splitting
-            chunk_overlap: Overlap between chunks
+            llm_model_name: NVIDIA LLM model name
         """
-        self.docs_folder = docs_folder
         self.milvus_db_path = milvus_db_path
         self.embedding_base_url = embedding_base_url
+        self.embedding_model_name = embedding_model_name
         self.llm_base_url = llm_base_url
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
+        self.llm_model_name = llm_model_name
         
         # Initialize components
         self.embedding_model = None
@@ -55,117 +50,170 @@ class RAGSystem:
         self.retriever = None
         self.rag_chain = None
         self.milvus_client = None
+        self.collection_name = f"nvidia_collection_{int(time.time())}"
         
         # Connect to Milvus Lite
         self.milvus_client = MilvusClient(uri=self.milvus_db_path)
         logger.info(f"Connected to Milvus Lite database at {self.milvus_db_path}")
-
+    
     def setup_embedding_model(self):
-        """Set up NVIDIA embeddings model."""
-        self.embedding_model = NVIDIAEmbeddings(
-            model_name="nvidia/nv-embedqa-e5-v5",
-            base_url=self.embedding_base_url
-        )
-        logger.info("Embedding model initialized")
-        return self.embedding_model
+        """Set up NVIDIA embeddings model with detailed logging."""
+        logger.info(f"Setting up NVIDIA embedding model {self.embedding_model_name} at {self.embedding_base_url}")
+        try:
+            self.embedding_model = NVIDIAEmbeddings(
+                model_name=self.embedding_model_name,
+                base_url=self.embedding_base_url,
+                max_batch_size=10  # Lower batch size to help with stability
+            )
+            logger.info("Embedding model initialized successfully")
+            
+            # Log available models for debugging
+            try:
+                available_models = self.embedding_model.available_models
+                logger.info(f"Available embedding models: {[model.id for model in available_models]}")
+            except Exception as e:
+                logger.warning(f"Could not fetch available models: {e}")
+                
+            return self.embedding_model
+        except Exception as e:
+            logger.error(f"Error initializing embedding model: {e}")
+            raise
     
     def setup_chat_model(self):
         """Set up NVIDIA chat completion model."""
-        self.chat_model = ChatNVIDIA(
-            model_name="meta/llama-3.1-nemotron-70b-instruct:latest",
-            base_url=self.llm_base_url,
-            max_tokens=32768,
-            temperature=0.1,
-            model_kwargs={
-                "do_sample": True,
-                "top_p": 0.9
-            }
-        )
-        logger.info("Chat model initialized")
-        return self.chat_model
+        logger.info(f"Setting up NVIDIA chat model {self.llm_model_name} at {self.llm_base_url}")
+        try:
+            self.chat_model = ChatNVIDIA(
+                model_name=self.llm_model_name,
+                base_url=self.llm_base_url,
+                max_tokens=32768,
+                temperature=0.1,
+                model_kwargs={
+                    "do_sample": True,
+                    "top_p": 0.9
+                }
+            )
+            logger.info("Chat model initialized successfully")
+            return self.chat_model
+        except Exception as e:
+            logger.error(f"Error initializing chat model: {e}")
+            raise
     
-    def load_and_split_documents(self) -> List[Document]:
-        """
-        Load documents from the specified folder and split them into chunks.
-        
-        Returns:
-            List of document chunks
-        """
-        # Check if folder exists
-        if not os.path.exists(self.docs_folder):
-            logger.error(f"Documents folder {self.docs_folder} does not exist")
-            raise FileNotFoundError(f"Folder {self.docs_folder} not found")
-        
-        # Load documents using DirectoryLoader with PyPDFLoader for PDF files
-        loader = DirectoryLoader(
-            self.docs_folder, 
-            glob="**/*.pdf",
-            loader_cls=PyPDFLoader,
-            show_progress=True
-        )
-        
-        documents = loader.load()
-        logger.info(f"Loaded {len(documents)} documents from {self.docs_folder}")
-        
-        # Split documents into chunks
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-            length_function=len,
-            add_start_index=True
-        )
-        
-        doc_chunks = text_splitter.split_documents(documents)
-        logger.info(f"Split documents into {len(doc_chunks)} chunks")
-        
-        return doc_chunks
+    def _create_milvus_collection(self, dimension=1024):
+        """Create a Milvus Lite collection with the specified dimension."""
+        logger.info(f"Creating Milvus Lite collection '{self.collection_name}' with dimension {dimension}")
+        try:
+            # Create the collection
+            if self.collection_name not in self.milvus_client.list_collections():
+                self.milvus_client.create_collection(
+                    collection_name=self.collection_name,
+                    dimension=dimension
+                )
+                logger.info(f"Created Milvus Lite collection: {self.collection_name}")
+            else:
+                logger.info(f"Collection {self.collection_name} already exists")
+        except Exception as e:
+            logger.error(f"Error creating Milvus collection: {e}")
+            raise
     
-    def setup_vectorstore(self, documents: List[Document]) -> Milvus:
+    def embed_and_store_documents(self, documents: List[Document]):
         """
-        Set up Milvus Lite vector store with the provided documents.
+        Embed documents using NVIDIA embeddings and store them in Milvus Lite.
         
         Args:
-            documents: List of document chunks to embed and store
-            
-        Returns:
-            Configured Milvus Lite vector store
+            documents: List of Document objects
         """
+        logger.info(f"Embedding and storing {len(documents)} documents")
+        
         # Ensure embedding model is initialized
         if self.embedding_model is None:
             self.setup_embedding_model()
         
-        # Create collection name with timestamp to avoid conflicts
-        collection_name = f"rag_collection_{int(time.time())}"
+        # Extract text content from documents
+        texts = [doc.page_content for doc in documents]
         
-        # Get embedding dimension from model (NVIDIA embedqa-e5-v5 uses 1024 dimensions)
-        embedding_dimension = 1024
+        # Create the collection with appropriate dimension
+        # NVIDIA nv-embedqa-e5-v5 uses 1024 dimensions
+        self._create_milvus_collection(dimension=1024)
         
-        # First, create the collection in Milvus Lite
-        if collection_name not in self.milvus_client.list_collections():
-            self.milvus_client.create_collection(
-                collection_name=collection_name,
-                dimension=embedding_dimension
+        # Process documents in small batches to avoid potential issues
+        batch_size = 5
+        
+        try:
+            for i in range(0, len(documents), batch_size):
+                batch_docs = documents[i:i + batch_size]
+                batch_texts = [doc.page_content for doc in batch_docs]
+                
+                logger.info(f"Processing batch {i//batch_size + 1}/{(len(documents)-1)//batch_size + 1} ({len(batch_texts)} documents)")
+                
+                try:
+                    # Generate embeddings for this batch
+                    batch_embeddings = self.embedding_model.embed_documents(batch_texts)
+                    
+                    # Prepare data for Milvus insertion
+                    data_to_insert = []
+                    for j, (doc, embedding) in enumerate(zip(batch_docs, batch_embeddings)):
+                        entry = {
+                            "id": i + j,
+                            "vector": embedding,
+                            "text": doc.page_content,
+                            "metadata": str(doc.metadata)  # Convert metadata to string for storage
+                        }
+                        data_to_insert.append(entry)
+                    
+                    # Insert data into Milvus
+                    self.milvus_client.insert(
+                        collection_name=self.collection_name,
+                        data=data_to_insert
+                    )
+                    
+                    logger.info(f"Successfully inserted batch {i//batch_size + 1}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing batch {i//batch_size + 1}: {e}")
+                    # Continue with next batch
+            
+            logger.info(f"Completed embedding and storing documents")
+            
+        except Exception as e:
+            logger.error(f"Error in embed_and_store_documents: {e}")
+            raise
+    
+    def setup_vectorstore(self, documents: List[Document]):
+        """
+        Set up the LangChain Milvus vectorstore.
+        
+        Args:
+            documents: List of documents used to create the vectorstore
+        """
+        logger.info("Setting up LangChain vectorstore")
+        
+        try:
+            # First, embed and store the documents directly
+            self.embed_and_store_documents(documents)
+            
+            # Then create a LangChain Milvus vectorstore for the same collection
+            if self.embedding_model is None:
+                self.setup_embedding_model()
+                
+            self.vectorstore = Milvus(
+                embedding_function=self.embedding_model,
+                collection_name=self.collection_name,
+                connection_args={"uri": self.milvus_db_path}
             )
-            logger.info(f"Created Milvus Lite collection: {collection_name}")
-        
-        # Create a Milvus vector store with Milvus Lite
-        self.vectorstore = Milvus.from_documents(
-            documents=documents,
-            embedding=self.embedding_model,
-            collection_name=collection_name,
-            connection_args={"uri": self.milvus_db_path},
-            drop_old=True
-        )
-        
-        logger.info(f"Created Milvus Lite vector store with collection: {collection_name}")
-        
-        # Set up retriever
-        self.retriever = self.vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": 4}  # Retrieve top 4 chunks
-        )
-        
-        return self.vectorstore
+            
+            # Set up retriever
+            self.retriever = self.vectorstore.as_retriever(
+                search_type="similarity", 
+                search_kwargs={"k": 4}
+            )
+            
+            logger.info("Vectorstore and retriever setup complete")
+            return self.vectorstore
+            
+        except Exception as e:
+            logger.error(f"Error setting up vectorstore: {e}")
+            raise
     
     def setup_rag_chain(self):
         """
@@ -174,6 +222,8 @@ class RAGSystem:
         Returns:
             Configured RAG chain
         """
+        logger.info("Setting up RAG chain")
+        
         # Ensure chat model is initialized
         if self.chat_model is None:
             self.setup_chat_model()
@@ -226,14 +276,17 @@ class RAGSystem:
         
         return response
     
-    def initialize_full_pipeline(self):
+    def initialize_for_documents(self, documents: List[Document]):
         """
-        Initialize the complete RAG pipeline at once.
+        Initialize the complete pipeline for the provided documents
         
+        Args:
+            documents: List of Document objects
+            
         Returns:
             Self for method chaining
         """
-        logger.info("Initializing full RAG pipeline...")
+        logger.info("Initializing NVIDIA RAG pipeline...")
         
         # Setup embedding model
         self.setup_embedding_model()
@@ -241,81 +294,116 @@ class RAGSystem:
         # Setup chat model
         self.setup_chat_model()
         
-        # Load and split documents
-        documents = self.load_and_split_documents()
-        
-        # Setup vector store and retriever
+        # Setup vector store and insert documents
         self.setup_vectorstore(documents)
         
         # Setup RAG chain
         self.setup_rag_chain()
         
-        logger.info("RAG pipeline fully initialized")
+        logger.info("NVIDIA RAG pipeline fully initialized")
         return self
     
-    def check_milvus_content(self, query="test", k=3):
+    def test_embedding_service(self, test_text="This is a test of the NVIDIA embedding service."):
         """
-        Check what's in Milvus Lite by doing a simple similarity search.
+        Test the NVIDIA embedding service with a simple text.
         
         Args:
-            query: Test query to search for
-            k: Number of results to return
+            test_text: Text to embed for testing
+        
+        Returns:
+            Embedding vector or None if there was an error
         """
+        logger.info("Testing NVIDIA embedding service")
+        
+        if self.embedding_model is None:
+            self.setup_embedding_model()
+        
         try:
-            # List all collections
-            print("\nCollections in Milvus Lite:")
-            collections = self.milvus_client.list_collections()
-            print(collections)
-            
-            if not collections:
-                logger.warning("No collections found in Milvus Lite")
-                return
-            
-            # Use the vectorstore for similarity search if available
-            if self.vectorstore:
-                docs = self.vectorstore.similarity_search(query=query, k=k)
-                
-                print(f"\nSample documents for query '{query}':")
-                for i, doc in enumerate(docs, 1):
-                    print(f"\nDocument {i}:")
-                    print(f"Content: {doc.page_content[:200]}...")
-                    print(f"Metadata: {doc.metadata}")
-            else:
-                logger.warning("Vector store not initialized")
-                
+            # Try to embed a simple text
+            embedding = self.embedding_model.embed_query(test_text)
+            logger.info(f"Successfully generated embedding with dimension {len(embedding)}")
+            return embedding
         except Exception as e:
-            logger.error(f"Error checking Milvus Lite content: {e}")
+            logger.error(f"Error testing embedding service: {e}")
+            return None
+
+    def list_collections(self):
+        """List all collections in Milvus Lite"""
+        collections = self.milvus_client.list_collections()
+        logger.info(f"Collections in Milvus Lite: {collections}")
+        return collections
+    
+    def search_documents(self, query_text, top_k=3):
+        """
+        Search for documents using the query text
+        
+        Args:
+            query_text: Query text
+            top_k: Number of results to return
+            
+        Returns:
+            List of search results
+        """
+        logger.info(f"Searching for: '{query_text}'")
+        
+        if self.embedding_model is None:
+            self.setup_embedding_model()
+        
+        try:
+            # Generate embedding for query
+            query_embedding = self.embedding_model.embed_query(query_text)
+            
+            # Search using the embedding
+            results = self.milvus_client.search(
+                collection_name=self.collection_name,
+                data=[query_embedding],
+                limit=top_k,
+                output_fields=["text", "metadata"]
+            )
+            
+            logger.info(f"Found {len(results[0])} results")
+            return results
+        except Exception as e:
+            logger.error(f"Error searching documents: {e}")
+            raise
 
 
-def main():
-    """
-    Main function to demonstrate the RAG pipeline.
-    """
-    # Initialize the RAG system with Milvus Lite
-    rag_system = RAGSystem(
-        docs_folder="documents",
-        milvus_db_path="./milvus_lite.db"
-    )
-    
-    # Initialize the full pipeline
-    rag_system.initialize_full_pipeline()
-    
-    # Check what's in Milvus Lite
-    rag_system.check_milvus_content()
-    
-    # Example queries
-    example_queries = [
-        "What are the main topics covered in the documents?",
-        "Summarize the key points from the documents.",
-        "What are the recommendations or conclusions in the documents?"
+# Example usage
+def example():
+    # Create some test documents
+    documents = [
+        Document(page_content="Artificial intelligence was founded as an academic discipline in 1956.", 
+                 metadata={"source": "test", "index": 0}),
+        Document(page_content="Alan Turing was the first person to conduct substantial research in AI.", 
+                 metadata={"source": "test", "index": 1}),
+        Document(page_content="Born in Maida Vale, London, Turing was raised in southern England.", 
+                 metadata={"source": "test", "index": 2}),
     ]
     
-    for query in example_queries:
-        print(f"\n\nQuery: {query}")
-        result = rag_system.query(query)
-        print(f"Answer: {result['answer']}")
-        print(f"Retrieved {len(result['context'])} documents")
-
+    # Initialize the RAG system
+    rag = NVIDIARAGSystem()
+    
+    # Test the embedding service
+    embedding = rag.test_embedding_service()
+    if embedding:
+        print(f"Embedding service is working! Vector dimension: {len(embedding)}")
+    else:
+        print("Embedding service test failed")
+        return
+    
+    # Initialize the pipeline
+    rag.initialize_for_documents(documents)
+    
+    # Test a query
+    query = "Who was Alan Turing?"
+    results = rag.search_documents(query)
+    print(f"\nSearch results for '{query}':")
+    print(results)
+    
+    # Test the RAG chain
+    response = rag.query(query)
+    print("\nRAG response:")
+    print(response["answer"])
 
 if __name__ == "__main__":
-    main()
+    example()
