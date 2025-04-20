@@ -4,6 +4,7 @@ RAG Implementation using NVIDIA AI Endpoints and Milvus Lite
 
 import os
 import time
+import logging
 from typing import List, Dict, Any
 
 # LangChain and related imports
@@ -15,9 +16,8 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_milvus import Milvus
 from pymilvus import MilvusClient
 
-# Set logging level
-import logging
-logging.basicConfig(level=logging.DEBUG)  # Set to DEBUG to see more detailed logs
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class RAGSystem:
@@ -50,14 +50,14 @@ class RAGSystem:
         self.retriever = None
         self.rag_chain = None
         self.milvus_client = None
-        self.collection_name = f"nvidia_collection_{int(time.time())}"
+        self.collection_name = f"rag_collection_{int(time.time())}"
         
         # Connect to Milvus Lite
         self.milvus_client = MilvusClient(uri=self.milvus_db_path)
         logger.info(f"Connected to Milvus Lite database at {self.milvus_db_path}")
     
     def setup_embedding_model(self):
-        """Set up NVIDIA embeddings model with detailed logging."""
+        """Set up NVIDIA embeddings model."""
         logger.info(f"Setting up NVIDIA embedding model {self.embedding_model_name} at {self.embedding_base_url}")
         try:
             self.embedding_model = NVIDIAEmbeddings(
@@ -129,14 +129,11 @@ class RAGSystem:
         if self.embedding_model is None:
             self.setup_embedding_model()
         
-        # Extract text content from documents
-        texts = [doc.page_content for doc in documents]
-        
         # Create the collection with appropriate dimension
         # NVIDIA nv-embedqa-e5-v5 uses 1024 dimensions
         self._create_milvus_collection(dimension=1024)
         
-        # Process documents in small batches to avoid potential issues
+        # Process documents in small batches
         batch_size = 5
         
         try:
@@ -153,11 +150,13 @@ class RAGSystem:
                     # Prepare data for Milvus insertion
                     data_to_insert = []
                     for j, (doc, embedding) in enumerate(zip(batch_docs, batch_embeddings)):
+                        # Store the actual document content and metadata as separate fields
                         entry = {
                             "id": i + j,
                             "vector": embedding,
-                            "text": doc.page_content,
-                            "metadata": str(doc.metadata)  # Convert metadata to string for storage
+                            "text": doc.page_content,  # Store the actual text
+                            "source": doc.metadata.get("source", "unknown"),
+                            "index": doc.metadata.get("index", 0)
                         }
                         data_to_insert.append(entry)
                     
@@ -199,7 +198,8 @@ class RAGSystem:
             self.vectorstore = Milvus(
                 embedding_function=self.embedding_model,
                 collection_name=self.collection_name,
-                connection_args={"uri": self.milvus_db_path}
+                connection_args={"uri": self.milvus_db_path},
+                text_field="text"  # Specify the text field explicitly
             )
             
             # Set up retriever
@@ -271,10 +271,67 @@ class RAGSystem:
         
         logger.info(f"Processing query: {question}")
         
-        # Execute the chain
-        response = self.rag_chain.invoke({"input": question})
+        try:
+            # Execute the chain
+            response = self.rag_chain.invoke({"input": question})
+            return response
+        except Exception as e:
+            logger.error(f"Error executing RAG chain: {e}")
+            # Return a fallback response with error information
+            return {
+                "answer": f"I encountered an error processing your query. Error: {str(e)}",
+                "context": []
+            }
+    
+    def search_documents(self, query_text, top_k=3):
+        """
+        Search for documents using the query text directly through Milvus.
         
-        return response
+        Args:
+            query_text: Query text
+            top_k: Number of results to return
+            
+        Returns:
+            List of search results with document text
+        """
+        logger.info(f"Searching for: '{query_text}'")
+        
+        if self.embedding_model is None:
+            self.setup_embedding_model()
+        
+        try:
+            # Generate embedding for query
+            query_embedding = self.embedding_model.embed_query(query_text)
+            
+            # Search using the embedding
+            results = self.milvus_client.search(
+                collection_name=self.collection_name,
+                data=[query_embedding],
+                limit=top_k,
+                output_fields=["text", "source", "index"]
+            )
+            
+            # Create Document objects from the search results
+            documents = []
+            if results and len(results) > 0:
+                for hit in results[0]:
+                    entity = hit.get("entity", {})
+                    doc = Document(
+                        page_content=entity.get("text", ""),
+                        metadata={
+                            "source": entity.get("source", "unknown"),
+                            "index": entity.get("index", 0),
+                            "score": hit.get("score", 0)
+                        }
+                    )
+                    documents.append(doc)
+            
+            logger.info(f"Found {len(documents)} documents")
+            return {"results": results, "documents": documents}
+            
+        except Exception as e:
+            logger.error(f"Error searching documents: {e}")
+            return {"results": [], "documents": [], "error": str(e)}
     
     def initialize_for_documents(self, documents: List[Document]):
         """
@@ -286,7 +343,7 @@ class RAGSystem:
         Returns:
             Self for method chaining
         """
-        logger.info("Initializing NVIDIA RAG pipeline...")
+        logger.info("Initializing RAG pipeline...")
         
         # Setup embedding model
         self.setup_embedding_model()
@@ -300,7 +357,7 @@ class RAGSystem:
         # Setup RAG chain
         self.setup_rag_chain()
         
-        logger.info("NVIDIA RAG pipeline fully initialized")
+        logger.info("RAG pipeline fully initialized")
         return self
     
     def test_embedding_service(self, test_text="This is a test of the NVIDIA embedding service."):
@@ -332,78 +389,3 @@ class RAGSystem:
         collections = self.milvus_client.list_collections()
         logger.info(f"Collections in Milvus Lite: {collections}")
         return collections
-    
-    def search_documents(self, query_text, top_k=3):
-        """
-        Search for documents using the query text
-        
-        Args:
-            query_text: Query text
-            top_k: Number of results to return
-            
-        Returns:
-            List of search results
-        """
-        logger.info(f"Searching for: '{query_text}'")
-        
-        if self.embedding_model is None:
-            self.setup_embedding_model()
-        
-        try:
-            # Generate embedding for query
-            query_embedding = self.embedding_model.embed_query(query_text)
-            
-            # Search using the embedding
-            results = self.milvus_client.search(
-                collection_name=self.collection_name,
-                data=[query_embedding],
-                limit=top_k,
-                output_fields=["text", "metadata"]
-            )
-            
-            logger.info(f"Found {len(results[0])} results")
-            return results
-        except Exception as e:
-            logger.error(f"Error searching documents: {e}")
-            raise
-
-
-# Example usage
-def example():
-    # Create some test documents
-    documents = [
-        Document(page_content="Artificial intelligence was founded as an academic discipline in 1956.", 
-                 metadata={"source": "test", "index": 0}),
-        Document(page_content="Alan Turing was the first person to conduct substantial research in AI.", 
-                 metadata={"source": "test", "index": 1}),
-        Document(page_content="Born in Maida Vale, London, Turing was raised in southern England.", 
-                 metadata={"source": "test", "index": 2}),
-    ]
-    
-    # Initialize the RAG system
-    rag = NVIDIARAGSystem()
-    
-    # Test the embedding service
-    embedding = rag.test_embedding_service()
-    if embedding:
-        print(f"Embedding service is working! Vector dimension: {len(embedding)}")
-    else:
-        print("Embedding service test failed")
-        return
-    
-    # Initialize the pipeline
-    rag.initialize_for_documents(documents)
-    
-    # Test a query
-    query = "Who was Alan Turing?"
-    results = rag.search_documents(query)
-    print(f"\nSearch results for '{query}':")
-    print(results)
-    
-    # Test the RAG chain
-    response = rag.query(query)
-    print("\nRAG response:")
-    print(response["answer"])
-
-if __name__ == "__main__":
-    example()

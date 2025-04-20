@@ -7,8 +7,8 @@ import logging
 from rag_implementation import RAGSystem
 from langchain.schema import Document
 
-# Set logging level
-logging.basicConfig(level=logging.DEBUG)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_fiqa_dataset():
@@ -60,7 +60,7 @@ def convert_fiqa_to_documents(fiqa_data):
 
 def main():
     """
-    Main function to run the NVIDIA RAG with FiQA dataset and Milvus Lite
+    Main function to run the RAG system
     """
     # Test the NVIDIA embedding service first
     print("\n=== Testing NVIDIA Embedding Service ===")
@@ -90,7 +90,7 @@ def main():
     documents = convert_fiqa_to_documents(fiqa_data)
     
     # Initialize the RAG system with NVIDIA embeddings and Milvus Lite
-    print("\n=== Initializing NVIDIA RAG System ===")
+    print("\n=== Initializing RAG System ===")
     rag = RAGSystem(
         milvus_db_path="./fiqa_milvus_lite.db",
         embedding_base_url="http://localhost:8089",
@@ -116,22 +116,26 @@ def main():
         for query in example_queries:
             print(f"\nQuery: {query}")
             try:
-                # First, show direct search results
+                # First, perform a direct search
                 search_results = rag.search_documents(query, top_k=2)
+                
+                # Display search results
                 print(f"Direct search results:")
-                for i, result in enumerate(search_results[0]):
+                for i, doc in enumerate(search_results["documents"]):
                     print(f"Result {i+1}:")
-                    print(f"Text: {result['entity']['text'][:150]}...")
+                    print(f"Text: {doc.page_content[:150]}...")
                     
                 # Then show RAG results
-                result = rag.query(query)
-                print(f"\nRAG Answer: {result['answer']}")
-                print(f"Retrieved {len(result['context'])} documents")
+                rag_result = rag.query(query)
+                print(f"\nRAG Answer: {rag_result['answer']}")
+                
+                if "context" in rag_result:
+                    print(f"Retrieved {len(rag_result['context'])} documents")
             except Exception as e:
                 print(f"Error processing query: {e}")
         
         # Interactive query loop
-        print("\n=== NVIDIA RAG Query System for FiQA Dataset ===")
+        print("\n=== RAG Query System for FiQA Dataset ===")
         print("Type 'exit' to quit")
         
         while True:
@@ -143,17 +147,28 @@ def main():
                 continue
                 
             try:
-                result = rag.query(query)
-                print("\nAnswer:")
-                print(result['answer'])
+                # Perform direct search
+                search_results = rag.search_documents(query, top_k=3)
+                
+                print("\nDirect search results:")
+                for i, doc in enumerate(search_results["documents"]):
+                    print(f"Result {i+1}:")
+                    print(f"Text: {doc.page_content[:100]}...")
+                
+                # Get RAG answer
+                rag_result = rag.query(query)
+                
+                print("\nRAG Answer:")
+                print(rag_result['answer'])
                 
                 # Optionally show retrieved documents
-                show_docs = input("Show retrieved document chunks? (y/n): ")
-                if show_docs.lower() == 'y':
-                    for i, doc in enumerate(result['context'], 1):
-                        print(f"\nChunk {i}:")
-                        print(f"Content: {doc.page_content[:200]}...")
-                        print(f"Metadata: {doc.metadata}")
+                if "context" in rag_result and rag_result["context"]:
+                    show_docs = input("Show retrieved document chunks? (y/n): ")
+                    if show_docs.lower() == 'y':
+                        for i, doc in enumerate(rag_result["context"], 1):
+                            print(f"\nChunk {i}:")
+                            print(f"Content: {doc.page_content[:200]}...")
+                            print(f"Metadata: {doc.metadata}")
             except Exception as e:
                 print(f"Error processing query: {e}")
                 
