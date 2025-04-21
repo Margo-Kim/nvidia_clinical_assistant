@@ -10,8 +10,8 @@ from datasets import load_dataset
 from tiktoken import get_encoding
 # choose reasonable defaults for FiQA
 _SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=700,         # ≈ 480‑token ceiling keeps NIM happy
-    chunk_overlap=100,
+    chunk_size=500,         # ≈ 480‑token ceiling keeps NIM happy
+    chunk_overlap=120,
 )
 
 ENC = get_encoding("cl100k_base")
@@ -102,12 +102,12 @@ def split_documents(raw_docs):
     docs = []
     for doc in raw_docs:
         for i, chunk in enumerate(_SPLITTER.split_text(doc.page_content)):
-            if len(ENC.encode(chunk)) <= MAX_TOKENS:
+            if len(chunk) <= 450:          # character guard
                 docs.append(
                     Document(page_content=chunk,
                              metadata={**doc.metadata, "chunk": i})
                 )
-    logger.info(f"Split {len(raw_docs)} documents into {len(docs)} chunks")
+    logger.info("Split %d docs into %d safe chunks", len(raw_docs), len(docs))
     return docs
 
 def process_documents(limit=10):
