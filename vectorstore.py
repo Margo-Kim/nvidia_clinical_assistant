@@ -86,7 +86,7 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
     """
     Create a Milvus Lite collection and stream‑insert documents in batches of 3.
     """
-    from pymilvus import MilvusClient, DataType
+    from pymilvus import FieldSchema, CollectionSchema, MilvusClient, DataType
 
     logger.info("Setting up Milvus Lite vector store (incremental insert)")
 
@@ -94,7 +94,12 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
     client = MilvusClient(milvus_db_path)
     if client.has_collection(coll_name):
         client.drop_collection(coll_name)
-
+    text_field = FieldSchema(
+        name="text",
+        dtype=DataType.VARCHAR,
+        max_length=4096,
+        is_primary=False,
+    )
     # define schema (auto_id=True lets Milvus assign pk)
     client.create_collection(
         collection_name=coll_name,
@@ -104,10 +109,12 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
         id_type=DataType.INT64,
         metric_type="COSINE",
         auto_id=True,
-        enable_dynamic_field = True
+        enable_dynamic_field = True,
+        fields=[text_field],  
     )
 
     # insert in safe batches
+
     for chunk in _batched(documents, BATCH):
         texts  = [d.page_content for d in chunk]
         metas  = [d.metadata     for d in chunk]
