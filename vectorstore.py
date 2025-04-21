@@ -115,6 +115,10 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
                 {"vector": v, "text": t, **m} for v, t, m in zip(vecs, texts, metas)
             ],
         )
+        logger.info(f"Inserted {len(vecs)} vectors into Milvus Lite collection: {coll_name}")
+        print(f"text: {texts[0]}")
+        print(f"metadata: {metas[0]}")
+        print(f"vector: {vecs[0]}")
 
     client.load_collection(coll_name)
     logger.info("Created Milvus Lite vector store: %s (%s docs)", coll_name, len(documents))

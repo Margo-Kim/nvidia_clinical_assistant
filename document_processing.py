@@ -10,8 +10,8 @@ from datasets import load_dataset
 from tiktoken import get_encoding
 # choose reasonable defaults for FiQA
 _SPLITTER = RecursiveCharacterTextSplitter(
-    chunk_size=500,         # ≈ 480‑token ceiling keeps NIM happy
-    chunk_overlap=120,
+    chunk_size=450,         # ≈ 480‑token ceiling keeps NIM happy
+    chunk_overlap=100,
 )
 
 ENC = get_encoding("cl100k_base")
