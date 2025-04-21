@@ -7,17 +7,12 @@ from typing import Iterable, List
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from langchain.schema import Document
 from langchain_milvus import Milvus
-from pymilvus import (
-    MilvusClient,
-    CollectionSchema,
-    FieldSchema,
-    DataType,
-)
+from pymilvus import MilvusClient, CollectionSchema, FieldSchema, DataType
 
 logger = logging.getLogger(__name__)
 
-# Match this to your embedding_model.max_batch_size
-BATCH = 5
+# Must not exceed embedding_model.max_batch_size
+BATCH = 3
 MAX_RETRIES = 4
 
 @retry(wait=wait_random_exponential(multiplier=1, max=5),
@@ -27,7 +22,7 @@ def _embed(texts: List[str], embedder):
     try:
         return embedder.embed_documents(texts)
     except Exception as batch_err:
-        # try one‑by‑one so we only drop the offender
+        # try individually so only the bad passage is dropped
         good_vecs = []
         for t in texts:
             try:
@@ -55,18 +50,17 @@ def create_vectorstore(
     milvus_db_path: str
 ) -> Milvus:
     """
-    Create a Milvus‑Lite collection and stream‑insert your documents.
-
-    Returns a LangChain Milvus wrapper ready for similarity_search().
+    Create a Milvus‑Lite collection and stream‑insert your documents in batches.
+    Returns a LangChain Milvus wrapper for similarity_search().
     """
     coll_name = f"rag_collection_{int(time.time())}"
     client = MilvusClient(milvus_db_path)
 
-    # Drop if already exists
+    # Drop if exists
     if client.has_collection(coll_name):
         client.drop_collection(coll_name)
 
-    # Explicit schema with pk, vector, and text
+    # Define explicit schema (pk, vector, text)
     fields = [
         FieldSchema(name="pk",     dtype=DataType.INT64,       is_primary=True, auto_id=True),
         FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1024),
@@ -81,19 +75,20 @@ def create_vectorstore(
         metas = [doc.metadata     for doc in chunk]
         vecs  = _embed(texts, embedding_model)
 
-        # build row dicts
-        entities = []
-        for v, t, m in zip(vecs, texts, metas):
-            row = {"vector": v, "text": t, **m}
-            entities.append(row)
+        # Build row dicts
+        rows = [
+            {"vector": v, "text": t, **m}
+            for v, t, m in zip(vecs, texts, metas)
+        ]
 
-        client.insert(coll_name, entities=entities)
-        logger.info("Inserted %d vectors into %s", len(entities), coll_name)
+        # *** correct signature: data=rows ***
+        client.insert(coll_name, data=rows)
+        logger.info("Inserted %d vectors into %s", len(rows), coll_name)
 
     client.load_collection(coll_name)
     logger.info("Milvus‑Lite vector store ready: %s (%d docs)", coll_name, len(documents))
 
-    # Wrap in LangChain Milvus for downstream similarity_search
+    # Wrap for LangChain so similarity_search works unchanged
     return Milvus(
         embedding_function=embedding_model,
         connection_args={"uri": milvus_db_path},
