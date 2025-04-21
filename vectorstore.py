@@ -5,7 +5,7 @@ Vector store module for Milvus Lite
 import logging
 import time
 from typing import List
-
+from pymilvus import DataType
 from langchain.schema import Document
 from langchain_milvus import Milvus
 
@@ -95,7 +95,7 @@ def create_vectorstore(documents, embedding_model, milvus_db_path):
         dimension=1024,
         primary_field_name="pk",
         vector_field_name="vector",
-        id_type="int",
+        id_type=DataType.INT64,
         metric_type="COSINE",
         auto_id=False, 
     )
