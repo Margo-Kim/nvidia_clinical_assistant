@@ -4,9 +4,14 @@ Document processing module for FiQA dataset
 
 import logging
 from typing import List
-
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from datasets import load_dataset
+# choose reasonable defaults for FiQA
+_SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=700,         # ≈ 480‑token ceiling keeps NIM happy
+    chunk_overlap=100,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,29 @@ def convert_fiqa_to_documents(fiqa_data):
     logger.info(f"Converted {len(documents)} FiQA items to Document format")
     return documents
 
+def split_documents(docs, splitter=_SPLITTER):
+    """
+    Break long FiQA documents into smaller overlapping chunks.
+
+    Args:
+        docs (list[Document]): full‑length FiQA docs
+        splitter: any LangChain TextSplitter
+
+    Returns:
+        list[Document]: chunked docs with updated metadata
+    """
+    chunked_docs = []
+
+    for doc in docs:
+        for i, chunk in enumerate(splitter.split_text(doc.page_content)):
+            chunked_docs.append(
+                Document(
+                    page_content=chunk,
+                    metadata={**doc.metadata, "chunk": i}
+                )
+            )
+    return chunked_docs
+
 def process_documents(limit=10):
     """
     Process FiQA documents from loading to conversion
@@ -85,4 +113,4 @@ def process_documents(limit=10):
     
     # Convert to documents
     documents = convert_fiqa_to_documents(fiqa_data)
-    return documents
+    return split_documents(documents)
