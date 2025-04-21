@@ -74,30 +74,7 @@ def convert_fiqa_to_documents(fiqa_data):
     logger.info(f"Converted {len(documents)} FiQA items to Document format")
     return documents
 
-# def split_documents(docs, splitter=_SPLITTER):
-#     """
-#     Break long FiQA documents into smaller overlapping chunks.
 
-#     Args:
-#         docs (list[Document]): full‑length FiQA docs
-#         splitter: any LangChain TextSplitter
-
-#     Returns:
-#         list[Document]: chunked docs with updated metadata
-#     """
-#     chunked_docs = []
-
-#     for doc in docs:
-#         for i, chunk in enumerate(splitter.split_text(doc.page_content)):
-#             chunked_docs.append(
-#                 Document(
-#                     page_content=chunk,
-#                     metadata={**doc.metadata, "chunk": i}
-#                 )
-#             )
-#     logger.info(f"Split {len(docs)} documents into {len(chunked_docs)} chunks")
-#     # print(chunked_docs[0:30])
-#     return chunked_docs
 def split_documents(raw_docs):
     docs = []
     for doc in raw_docs:
