@@ -50,9 +50,25 @@ logger = logging.getLogger(__name__)
 BATCH = 3                 # must ≤ embedding_model.max_batch_size
 MAX_RETRIES = 4
 
-@retry(wait=wait_random_exponential(1, 4), stop=stop_after_attempt(MAX_RETRIES))
+@retry(wait=wait_random_exponential(1, 4),
+       stop=stop_after_attempt(MAX_RETRIES))
 def _embed(texts: List[str], embedder):
-    return embedder.embed_documents(texts)
+    """
+    Embed a batch. If the batch fails, fall back to single‑item calls
+    so only the problematic passage is skipped.
+    """
+    try:
+        return embedder.embed_documents(texts)
+    except Exception as batch_err:
+        good_vecs = []
+        for t in texts:
+            try:
+                good_vecs.extend(embedder.embed_documents([t]))
+            except Exception as e:
+                logger.warning("❌ Dropping a passage that NIM still rejects (%s)", e)
+        if not good_vecs:       # nothing worked → raise original error
+            raise batch_err
+        return good_vecs
 
 
 def _batched(iterable: Iterable, size: int):

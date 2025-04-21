@@ -7,12 +7,14 @@ from typing import List
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from datasets import load_dataset
+from tiktoken import get_encoding
 # choose reasonable defaults for FiQA
 _SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=700,         # ≈ 480‑token ceiling keeps NIM happy
     chunk_overlap=100,
 )
-
+ENC = get_encoding("cl100k_base")
+MAX_TOKENS = 480   
 logger = logging.getLogger(__name__)
 
 def load_fiqa_dataset(limit=10):
