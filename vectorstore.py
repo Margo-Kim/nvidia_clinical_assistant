@@ -1,5 +1,3 @@
-# vectorstore.py
-
 import logging
 import time
 from typing import Iterable, List
@@ -52,7 +50,7 @@ def create_vectorstore(
     1) Creates a Milvus‑Lite collection with:
          - pk (INT64 auto-generated)
          - vector (FLOAT_VECTOR, dim=1024)
-         - text (VARCHAR, up to 4096 chars)
+         - page_content (VARCHAR, up to 4096 chars)
        AND dynamic fields turned on so all your metadata (source, chunk, etc.) are stored too.
     2) Streams inserts in tiny BATCH batches, with retry/fallback.
     3) Returns the LangChain Milvus wrapper for .similarity_search().
@@ -64,10 +62,19 @@ def create_vectorstore(
     if client.has_collection(coll_name):
         client.drop_collection(coll_name)
 
+    # Log embedding model info for debugging
+    logger.info(f"Using embedding model type: {type(embedding_model)}")
+    try:
+        embedding_dim = embedding_model.dimension
+        logger.info(f"Embedding dimension: {embedding_dim}")
+    except (AttributeError, TypeError):
+        logger.warning("Could not determine embedding dimension, using default 1024")
+        embedding_dim = 1024
+
     # Shortcut API + dynamic fields
     client.create_collection(
         collection_name      = coll_name,
-        dimension            = 1024,
+        dimension            = embedding_dim,  # Use actual dimension from model
         primary_field_name   = "pk",
         vector_field_name    = "vector",
         id_type              = DataType.INT64,
@@ -82,8 +89,13 @@ def create_vectorstore(
         metas = [doc.metadata     for doc in chunk]
         vecs  = _embed(texts, embedding_model)
 
+        # Store document text as 'page_content' to match LangChain standard
         rows = [
-            { "vector": v, "text": t, **m }
+            { 
+                "vector": v, 
+                "page_content": t,  # Standard LangChain field name
+                **m 
+            }
             for v, t, m in zip(vecs, texts, metas)
         ]
         client.insert(coll_name, data=rows)
@@ -92,11 +104,12 @@ def create_vectorstore(
     client.load_collection(coll_name)
     logger.info("Milvus‑Lite vector store ready: %s (%d docs)", coll_name, len(documents))
 
-    # Wrap in LangChain facade
+    # Wrap in LangChain facade with explicit text_field
     return Milvus(
         embedding_function=embedding_model,
         connection_args={"uri": milvus_db_path},
         collection_name=coll_name,
+        text_field="page_content",  # Match field name used in rows
     )
 
 def search_documents(vectorstore: Milvus, query_text: str, top_k: int = 3):

@@ -1,5 +1,5 @@
 """
-RAG chain implementations
+RAG chain implementations with improved error handling
 """
 
 import logging
@@ -61,9 +61,26 @@ def query_rag_chain(rag_chain, question):
     try:
         # Execute the chain
         response = rag_chain.invoke({"input": question})
+        
+        # Log success
+        if 'context' in response and response['context']:
+            doc_count = len(response['context'])
+            logger.info(f"Successfully retrieved {doc_count} documents")
+            
+            # Debug log to check document structure
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, doc in enumerate(response['context']):
+                    logger.debug(f"Document {i+1} keys: {doc.__dict__.keys()}")
+                    logger.debug(f"Document {i+1} content: {getattr(doc, 'page_content', 'NO CONTENT')[:100]}...")
+        
         return response
     except Exception as e:
         logger.error(f"Error executing RAG chain: {e}")
+        
+        # Try to get more detailed error info
+        import traceback
+        logger.error(f"Detailed error: {traceback.format_exc()}")
+        
         # Return a fallback response with error information
         return {
             "answer": f"I encountered an error processing your query. Error: {str(e)}",
