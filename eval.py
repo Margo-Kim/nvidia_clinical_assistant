@@ -15,13 +15,12 @@ def load_fiqa_eval(limit=None):
     ds = load_dataset(
         "explodinggradients/fiqa",
         "ragas_eval",
-        split="ragas_eval"     # <‑‑  this makes ds a Dataset
+        split="baseline"    
     )
     if limit:
         ds = ds.select(range(limit))
 
-    # normalise to a DataFrame
-    import pandas as pd
+    
     df = pd.DataFrame({
         "question":      ds["question"],
         "ground_truths": ds["ground_truths"]  # or ds["answer"] depending on column name
