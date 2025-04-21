@@ -7,41 +7,41 @@ from typing import Iterable, List
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from langchain.schema import Document
 from langchain_milvus import Milvus
-from pymilvus import MilvusClient, DataType
+from pymilvus import MilvusClient, FieldSchema, CollectionSchema, DataType
 
 logger = logging.getLogger(__name__)
 
-# Keep ≤ max_batch_size from your embedding model
+# Must not exceed your embedding_model.max_batch_size
 BATCH = 3
 MAX_RETRIES = 4
 
 @retry(wait=wait_random_exponential(multiplier=1, max=5),
        stop=stop_after_attempt(MAX_RETRIES))
 def _embed(texts: List[str], embedder):
-    """Embed a small batch, fallback to single‐item if needed."""
+    """Embed a batch; if it fails, fallback to per‑item so only the bad one is dropped."""
     try:
         return embedder.embed_documents(texts)
     except Exception as batch_err:
-        good_vecs = []
+        good = []
         for t in texts:
             try:
-                good_vecs.extend(embedder.embed_documents([t]))
+                good.extend(embedder.embed_documents([t]))
             except Exception as e:
                 logger.warning("❌ Dropping bad passage: %s", e)
-        if not good_vecs:
+        if not good:
             raise batch_err
-        return good_vecs
+        return good
 
 def _batched(iterable: Iterable, size: int):
-    """Yield successive batches of length `size`."""
-    batch = []
+    """Yield consecutive chunks of length `size`."""
+    buf = []
     for item in iterable:
-        batch.append(item)
-        if len(batch) == size:
-            yield batch
-            batch = []
-    if batch:
-        yield batch
+        buf.append(item)
+        if len(buf) == size:
+            yield buf
+            buf = []
+    if buf:
+        yield buf
 
 def create_vectorstore(
     documents: List[Document],
@@ -49,32 +49,33 @@ def create_vectorstore(
     milvus_db_path: str
 ) -> Milvus:
     """
-    Create a Milvus‑Lite collection and stream‐insert all your documents in small batches.
-    Returns a LangChain Milvus wrapper for similarity_search.
+    1) Creates a Milvus‑Lite collection with explicit fields:
+       - pk (INT64 auto_id)
+       - vector (FLOAT_VECTOR, dim=1024)
+       - text (VARCHAR, up to 4 096 chars)
+    2) Streams inserts in batches of 3, with retry/fallback.
+    3) Returns a LangChain Milvus wrapper for unchanged .similarity_search().
     """
     coll_name = f"rag_collection_{int(time.time())}"
-    client = MilvusClient(milvus_db_path)
+    client = MilvusClient(uri=milvus_db_path)
 
-    # Drop any existing collection with that name
+    # Drop old if it exists
     if client.has_collection(coll_name):
         client.drop_collection(coll_name)
 
-    # Quick‐and‐dirty schema; dynamic fields ON so metadata + "text" get stored
-    client.create_collection(
-        collection_name      = coll_name,
-        dimension            = 1024,
-        primary_field_name   = "pk",
-        vector_field_name    = "vector",
-        id_type              = DataType.INT64,
-        metric_type          = "COSINE",
-        auto_id              = True,
-        enable_dynamic_field = True,
-    )
+    # Explicit schema
+    fields = [
+        FieldSchema(name="pk",     dtype=DataType.INT64,       is_primary=True, auto_id=True),
+        FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=1024),
+        FieldSchema(name="text",   dtype=DataType.VARCHAR,      max_length=4096),
+    ]
+    schema = CollectionSchema(fields, description="FiQA RAG chunks")
+    client.create_collection(collection_name=coll_name, schema=schema)
 
     # Insert in safe batches
     for chunk in _batched(documents, BATCH):
-        texts = [doc.page_content for doc in chunk]
-        metas = [doc.metadata     for doc in chunk]
+        texts = [d.page_content for d in chunk]
+        metas = [d.metadata     for d in chunk]
         vecs  = _embed(texts, embedding_model)
 
         rows = [
@@ -87,7 +88,7 @@ def create_vectorstore(
     client.load_collection(coll_name)
     logger.info("Milvus‑Lite vector store ready: %s (%d docs)", coll_name, len(documents))
 
-    # Wrap in LangChain facade so you can still call .similarity_search()
+    # Wrap in LangChain facade
     return Milvus(
         embedding_function=embedding_model,
         connection_args={"uri": milvus_db_path},
@@ -96,7 +97,7 @@ def create_vectorstore(
 
 def search_documents(vectorstore: Milvus, query_text: str, top_k: int = 3):
     """
-    Perform a similarity search and return LangChain Documents.
+    Wrapper around Milvus similarity_search → returns LangChain Documents.
     """
     logger.info("Searching for: '%s'", query_text)
     try:
