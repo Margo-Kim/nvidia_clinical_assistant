@@ -92,6 +92,8 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
 
     coll_name = f"rag_collection_{int(time.time())}"
     client = MilvusClient(milvus_db_path)
+    if client.has_collection(coll_name):
+        client.drop_collection(coll_name)
 
     # define schema (auto_id=True lets Milvus assign pk)
     client.create_collection(
@@ -102,6 +104,7 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
         id_type=DataType.INT64,
         metric_type="COSINE",
         auto_id=True,
+        enable_dynamic_field = True
     )
 
     # insert in safe batches
