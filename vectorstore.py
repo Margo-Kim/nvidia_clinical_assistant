@@ -95,8 +95,9 @@ def create_vectorstore(documents, embedding_model, milvus_db_path):
         dimension=1024,
         primary_field_name="pk",
         vector_field_name="vector",
-        id_type="INT64",
+        id_type="int",
         metric_type="COSINE",
+        auto_id=False, 
     )
 
     pk = 0
