@@ -36,7 +36,17 @@ def parse_args():
         action="store_true",
         help="Run in interactive mode"
     )
-    
+    parser.add_argument(
+      "--eval",
+       action="store_true",
+      help="Generate answers for FiQA ragas_eval split"
+    )
+    parser.add_argument(
+        "--eval_limit",
+        type=int,
+        default=None,
+        help="Cap number of FiQA eval questions (for a quick run)"
+    )
     return parser.parse_args()
 
 def run_example_queries(rag_system):
@@ -136,6 +146,14 @@ def main():
     # Initialize the RAG system with the documents
     print("\n=== Initializing RAG System ===")
     rag_system.initialize_for_documents(documents)
+    
+    if args.eval:
+        from eval import load_fiqa_eval, fill_answers
+
+        eval_df = load_fiqa_eval(limit=args.eval_limit)
+        print(f"\n=== Generating answers for {len(eval_df)} FiQA eval questions ===\n")
+        fill_answers(rag_system, eval_df, out_path="fiqa_answers.csv")
+        print("Finished. CSV saved as fiqa_answers.csv\n")
     
     # Run example queries
     run_example_queries(rag_system)
