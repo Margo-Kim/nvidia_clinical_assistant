@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 LLM_URL = "http://localhost:8088"
 LLM_MODEL = "meta/llama-3.1-nemotron-70b-instruct:latest"
 MAX_TOKENS = 32768
-TEMPERATURE = 0.1
+TEMPERATURE = 0.2
 
 def create_llm():
     """
