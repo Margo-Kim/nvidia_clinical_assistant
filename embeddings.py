@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 # Hardcoded configuration
 EMBEDDING_URL = "http://localhost:8089"
 EMBEDDING_MODEL = "nvidia/nv-embedqa-e5-v5"
-BATCH_SIZE = 3
+BATCH_SIZE = 5
 
 def create_embeddings():
     """

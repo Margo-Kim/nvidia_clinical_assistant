@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 #     except Exception as e:
 #         logger.error(f"Error creating Milvus Lite vector store: {e}")
 #         raise
-BATCH = 3                 # must ≤ embedding_model.max_batch_size
+BATCH = 5                 # must ≤ embedding_model.max_batch_size
 MAX_RETRIES = 4
 
 @retry(wait=wait_random_exponential(1, 4),
@@ -116,9 +116,6 @@ def create_vectorstore(documents: List[Document], embedding_model, milvus_db_pat
             ],
         )
         logger.info(f"Inserted {len(vecs)} vectors into Milvus Lite collection: {coll_name}")
-        print(f"text: {texts[0]}")
-        print(f"metadata: {metas[0]}")
-        print(f"vector: {vecs[0]}")
 
     client.load_collection(coll_name)
     logger.info("Created Milvus Lite vector store: %s (%s docs)", coll_name, len(documents))
