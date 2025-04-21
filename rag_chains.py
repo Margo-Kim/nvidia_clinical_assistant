@@ -32,6 +32,13 @@ def create_rag_chain(chat_model, retriever):
     
     Based on the provided context, please answer the following question accurately and concisely.
     If the answer cannot be found in the context, acknowledge that and provide general information if possible.
+
+    Instructions for answering:
+    1. Answer using only the information found in the context. 
+    2. Do not add any formatting or explanations. (NO ASTERISKS, NO BOLD)
+    3. Keep the answer semantically and structurally close to the content in the documents.
+    4. Focus on the financial information and advice relevant to the question.
+    5. If the information isn't available in the context, state this clearly.    
     
     Question: {input}
     """)
