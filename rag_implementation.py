@@ -114,6 +114,7 @@ class RAGSystem:
                 embedding=self.embedding_model,
                 collection_name=self.collection_name,
                 connection_args={"uri": self.milvus_db_path},
+                index_params={"index_type": "FLAT", "metric_type": "L2"}, 
                 drop_old=True      # Create a new collection
             )
             
