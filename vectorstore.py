@@ -4,10 +4,11 @@ Vector store module for Milvus Lite
 
 import logging
 import time
-from typing import List
+from typing import Iterable, List
 from pymilvus import DataType
 from langchain.schema import Document
 from langchain_milvus import Milvus
+from tenacity import retry, wait_random_exponential, stop_after_attempt
 
 logger = logging.getLogger(__name__)
 
@@ -46,22 +47,15 @@ logger = logging.getLogger(__name__)
 #     except Exception as e:
 #         logger.error(f"Error creating Milvus Lite vector store: {e}")
 #         raise
-from tenacity import retry, stop_after_attempt, wait_random_exponential
-
-# ------------------------------------------------------------------ #
-#  Helpers
-# ------------------------------------------------------------------ #
-BATCH = 3                 # must match max_batch_size above
+BATCH = 3                 # must ≤ embedding_model.max_batch_size
 MAX_RETRIES = 4
 
-@retry(stop=stop_after_attempt(MAX_RETRIES),
-       wait=wait_random_exponential(multiplier=1, max=5))
-def _safe_embed(texts, embedder):
-    """Embed a small batch with retry/back‑off on 5xx/429 errors."""
+@retry(wait=wait_random_exponential(1, 4), stop=stop_after_attempt(MAX_RETRIES))
+def _embed(texts: List[str], embedder):
     return embedder.embed_documents(texts)
 
 
-def _to_batches(iterable, size):
+def _batched(iterable: Iterable, size: int):
     batch = []
     for item in iterable:
         batch.append(item)
@@ -72,74 +66,48 @@ def _to_batches(iterable, size):
         yield batch
 
 
-# ------------------------------------------------------------------ #
-#  Main entry point used by the rest of your code
-# ------------------------------------------------------------------ #
-def create_vectorstore(documents, embedding_model, milvus_db_path):
+def create_vectorstore(documents: List[Document], embedding_model, milvus_db_path):
     """
-    Build a Milvus‑Lite collection incrementally (streaming) so we never
-    send >3 passages per request and never hold all vectors in RAM.
+    Create a Milvus Lite collection and stream‑insert documents in batches of 3.
     """
-    logger.info("Setting up Milvus Lite vector store (streaming insert)")
-    from pymilvus import MilvusClient   # local import keeps deps thin
+    from pymilvus import MilvusClient, DataType
 
-    client = MilvusClient(milvus_db_path)          # activates Lite
-    collection_name = f"rag_collection_{int(time.time())}"
+    logger.info("Setting up Milvus Lite vector store (incremental insert)")
 
-    if client.has_collection(collection_name):
-        client.drop_collection(collection_name)
+    coll_name = f"rag_collection_{int(time.time())}"
+    client = MilvusClient(milvus_db_path)
 
-    # Create schema once (FLAT/COSINE index, 1024‑dim)
+    # define schema (auto_id=True lets Milvus assign pk)
     client.create_collection(
-        collection_name=collection_name,
+        collection_name=coll_name,
         dimension=1024,
         primary_field_name="pk",
         vector_field_name="vector",
         id_type=DataType.INT64,
         metric_type="COSINE",
-        auto_id=False, 
+        auto_id=True,
     )
 
-    pk = 0
-    texts, metas = [], []
-
-    logger.info("Inserting documents in batches of %d …", BATCH)
-
-    for doc in documents:
-        texts.append(doc.page_content)
-        metas.append(doc.metadata)
-
-        if len(texts) == BATCH:
-            vecs = _safe_embed(texts, embedding_model)
-            client.insert(
-                collection_name,
-                data=[
-                    {"pk": pk + i, "vector": vecs[i], "text": texts[i], **metas[i]}
-                    for i in range(len(vecs))
-                ],
-            )
-            pk += len(texts)
-            texts, metas = [], []
-
-    # flush final partial batch
-    if texts:
-        vecs = _safe_embed(texts, embedding_model)
+    # insert in safe batches
+    for chunk in _batched(documents, BATCH):
+        texts  = [d.page_content for d in chunk]
+        metas  = [d.metadata     for d in chunk]
+        vecs   = _embed(texts, embedding_model)
         client.insert(
-            collection_name,
+            coll_name,
             data=[
-                {"pk": pk + i, "vector": vecs[i], "text": texts[i], **metas[i]}
-                for i in range(len(vecs))
+                {"vector": v, "text": t, **m} for v, t, m in zip(vecs, texts, metas)
             ],
         )
 
-    client.load_collection(collection_name)
-    logger.info("Created Milvus Lite vector store with collection: %s", collection_name)
+    client.load_collection(coll_name)
+    logger.info("Created Milvus Lite vector store: %s (%s docs)", coll_name, len(documents))
 
-    # Wrap the MilvusClient in LangChain’s facade so the rest of your code is untouched
+    # return LangChain wrapper so existing code stays the same
     return Milvus(
         embedding_function=embedding_model,
         connection_args={"uri": milvus_db_path},
-        collection_name=collection_name,
+        collection_name=coll_name,
     )
 
 
