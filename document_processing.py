@@ -92,6 +92,8 @@ def split_documents(docs, splitter=_SPLITTER):
                     metadata={**doc.metadata, "chunk": i}
                 )
             )
+    logger.info(f"Split {len(docs)} documents into {len(chunked_docs)} chunks")
+    print(chunked_docs[0:30])
     return chunked_docs
 
 def process_documents(limit=10):

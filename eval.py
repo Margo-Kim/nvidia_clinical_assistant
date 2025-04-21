@@ -4,22 +4,27 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from tqdm import tqdm   # pip install tqdm, if missing
 
 log = logging.getLogger(__name__)
 
-def load_fiqa_eval(limit: Optional[int] = None) -> pd.DataFrame:
-    """
-    Returns a DataFrame with: question, ground_truths
-    """
-    ds = load_dataset("explodinggradients/fiqa", "ragas_eval")["ragas_eval"]
+
+def load_fiqa_eval(limit=None):
+    # ask HF datasets to give the split directly
+    ds = load_dataset(
+        "explodinggradients/fiqa",
+        "ragas_eval",
+        split="ragas_eval"     # <‑‑  this makes ds a Dataset
+    )
     if limit:
         ds = ds.select(range(limit))
-    # unify column names
+
+    # normalise to a DataFrame
+    import pandas as pd
     df = pd.DataFrame({
         "question":      ds["question"],
-        "ground_truths": ds["ground_truths"],   
+        "ground_truths": ds["ground_truths"]  # or ds["answer"] depending on column name
     })
     return df
 
