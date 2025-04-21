@@ -5,7 +5,7 @@ from typing import Iterable, List
 from tenacity import retry, wait_random_exponential, stop_after_attempt
 from langchain.schema import Document
 from langchain_milvus import Milvus
-from pymilvus import MilvusClient, DataType
+from pymilvus import MilvusClient, DataType, FieldSchema, CollectionSchema
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def create_vectorstore(
     1) Creates a Milvus‑Lite collection with:
          - pk (INT64 auto-generated)
          - vector (FLOAT_VECTOR, dim=1024)
-         - page_content (VARCHAR, up to 4096 chars)
+         - page_content (VARCHAR, up to 65535 chars)
        AND dynamic fields turned on so all your metadata (source, chunk, etc.) are stored too.
     2) Streams inserts in tiny BATCH batches, with retry/fallback.
     3) Returns the LangChain Milvus wrapper for .similarity_search().
@@ -71,40 +71,52 @@ def create_vectorstore(
         logger.warning("Could not determine embedding dimension, using default 1024")
         embedding_dim = 1024
 
-    # Shortcut API + dynamic fields
+    # Create explicit schema with required fields
+    fields = [
+        FieldSchema(name="pk", dtype=DataType.INT64, is_primary=True, auto_id=True),
+        FieldSchema(name="vector", dtype=DataType.FLOAT_VECTOR, dim=embedding_dim),
+        FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535)
+    ]
+    
+    schema = CollectionSchema(fields=fields, enable_dynamic_field=True)
+    
+    # Create collection with explicit schema
     client.create_collection(
-        collection_name      = coll_name,
-        dimension            = embedding_dim,  # Use actual dimension from model
-        primary_field_name   = "pk",
-        vector_field_name    = "vector",
-        id_type              = DataType.INT64,
-        metric_type          = "COSINE",
-        auto_id              = True,
-        enable_dynamic_field = True,    # ← crucial
+        collection_name=coll_name, 
+        schema=schema
     )
 
     # Insert in safe, retryable batches
     for chunk in _batched(documents, BATCH):
         texts = [doc.page_content for doc in chunk]
-        metas = [doc.metadata     for doc in chunk]
-        vecs  = _embed(texts, embedding_model)
+        metas = [doc.metadata for doc in chunk]
+        vecs = _embed(texts, embedding_model)
 
-        # Store document text as 'page_content' to match LangChain standard
-        rows = [
-            { 
-                "vector": v, 
-                "page_content": t,  # Standard LangChain field name
-                **m 
+        # Store document text as 'text' field (this is crucial)
+        rows = []
+        for v, t, m in zip(vecs, texts, metas):
+            row = {
+                "vector": v,
+                "text": t  # The field name MUST match what we define in Milvus constructor
             }
-            for v, t, m in zip(vecs, texts, metas)
-        ]
-        client.insert(coll_name, data=rows)
-        logger.info("Inserted %d rows into %s", len(rows), coll_name)
+            # Add metadata as separate fields
+            for key, value in m.items():
+                row[key] = value
+            
+            rows.append(row)
+            
+        # Debug logging
+        logger.info("Sample row structure: %s", str({k: type(v).__name__ for k, v in rows[0].items()}))
+        
+        # Insert the rows
+        try:
+            client.insert(coll_name, data=rows)
+            logger.info("Inserted %d rows into %s", len(rows), coll_name)
+        except Exception as e:
+            logger.error("Error inserting rows: %s", e)
+            raise
 
-    client.load_collection(coll_name)
-    logger.info("Milvus‑Lite vector store ready: %s (%d docs)", coll_name, len(documents))
-
-    # Create index - FIXED PARAMETER FORMAT HERE
+    # Create index on vector field
     try:
         client.create_index(
             collection_name=coll_name,
@@ -120,12 +132,21 @@ def create_vectorstore(
         logger.error(f"Failed to create index: {e}")
         # This is non-fatal for Milvus Lite, can continue
 
-    # Wrap in LangChain facade with explicit text_field
+    # Load collection
+    client.load_collection(coll_name)
+    logger.info("Milvus‑Lite vector store ready: %s (%d docs)", coll_name, len(documents))
+    
+    # Verify the fields
+    sample = client.query(collection_name=coll_name, filter="", limit=1)
+    if sample:
+        logger.info("Sample document keys: %s", str(list(sample[0].keys())))
+
+    # Wrap in LangChain facade with text_field="text"
     return Milvus(
         embedding_function=embedding_model,
         connection_args={"uri": milvus_db_path},
         collection_name=coll_name,
-        text_field="page_content",  # Match field name used in rows
+        text_field="text"  # This MUST match the field name used above
     )
 
 def search_documents(vectorstore: Milvus, query_text: str, top_k: int = 3):
